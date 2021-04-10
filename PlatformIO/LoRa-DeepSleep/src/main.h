@@ -25,7 +25,6 @@
 // LoRaWan stuff
 bool initLoRa(void);
 void sendLoRa(void);
-extern SemaphoreHandle_t loraEvent;
 
 // Main loop stuff
 void periodicWakeup(TimerHandle_t unused);

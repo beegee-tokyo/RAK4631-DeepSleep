@@ -11,7 +11,14 @@
 
 #include "main.h"
 
-#define TX_ONLY
+// #define TX_ONLY
+
+// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
+// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
+// to catch incoming data packages
+// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
+uint32_t duty_cycle_rx_time = 2 * 1024 * 1000 * 15.625;
+uint32_t duty_cycle_sleep_time = 10 * 1024 * 1000 * 15.625;
 
 // LoRa transmission settings
 #define RF_FREQUENCY 923300000	// Hz
@@ -50,46 +57,8 @@ static uint8_t TxdBuffer[256];
 
 int16_t lastRSSI = 0;
 
-/** LoRa task handle */
-TaskHandle_t loraTaskHandle;
-/** Sensor reading task */
-void loraTask(void *pvParameters);
-
-/** Semaphore used by SX126x IRQ handler to wake up LoRaWan task */
-SemaphoreHandle_t loraEvent = NULL;
-
-/**
-   @brief SX126x interrupt handler
-   Called when DIO1 is set by SX126x
-   Gives loraEvent semaphore to wake up LoRaWan handler task
-*/
-void loraIntHandler(void)
-{
-	// SX126x set IRQ
-	if (loraEvent != NULL)
-	{
-		// Wake up LoRa task
-		xSemaphoreGive(loraEvent);
-	}
-}
-
 bool initLoRa(void)
 {
-	// Create the semaphore
-	myLog_d("Create LoRa semaphore");
-	delay(100); // Give Serial time to send
-	loraEvent = xSemaphoreCreateBinary();
-
-	// Give the semaphore, seems to be required to initialize it
-	myLog_d("Initialize LoRa Semaphore");
-	delay(100); // Give Serial time to send
-	xSemaphoreGive(loraEvent);
-
-	// Take the semaphore, so loop will be stopped waiting to get it
-	myLog_d("Take LoRa Semaphore");
-	delay(100); // Give Serial time to send
-	xSemaphoreTake(loraEvent, 10);
-
 	// Initialize library
 	if (lora_rak4630_init() == 1)
 	{
@@ -120,50 +89,16 @@ bool initLoRa(void)
 					  LORA_SYMBOL_TIMEOUT, LORA_FIX_LENGTH_PAYLOAD_ON,
 					  0, true, 0, 0, LORA_IQ_INVERSION_ON, true);
 
-	// In deep sleep we need to hijack the SX126x IRQ to trigger a wakeup of the nRF52
-	attachInterrupt(PIN_LORA_DIO_1, loraIntHandler, RISING);
-
-	// Start the task that will handle the LoRaWan events
-	myLog_d("Starting LoRaWan task");
-	if (!xTaskCreate(loraTask, "LORA", 2048, NULL, TASK_PRIO_LOW, &loraTaskHandle))
-	{
-		return false;
-	}
-
 #ifdef TX_ONLY
-	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
+	Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 	return true;
-}
-
-/**
-   @brief Independent task to handle LoRa events
-   @param pvParameters Unused
-*/
-void loraTask(void *pvParameters)
-{
-	while (1)
-	{
-		// Only if semaphore is available we need to handle LoRa events.
-		// Otherwise we sleep here until an event occurs
-		if (xSemaphoreTake(loraEvent, portMAX_DELAY) == pdTRUE)
-		{
-			// Switch on the indicator lights
-#if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
-			digitalWrite(LED_CONN, HIGH);
-#endif
-
-			// Handle Radio events with special process command!!!!
-			Radio.IrqProcessAfterDeepSleep();
-		}
-	}
 }
 
 /**
@@ -200,9 +135,6 @@ void sendLoRa(void)
 
 	// Start CAD
 	Radio.StartCad();
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**
@@ -212,23 +144,19 @@ void OnTxDone(void)
 {
 	myLog_d("OnTxDone");
 #ifdef TX_ONLY
-	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
+	Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 	// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 	digitalWrite(LED_CONN, LOW);
 #endif
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**@brief Function to be executed on Radio Rx Done event
@@ -259,22 +187,18 @@ void OnRxDone(uint8_t *payload, uint16_t size, int16_t rssi, int8_t snr)
 
 #ifdef TX_ONLY
 	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 	// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 	digitalWrite(LED_CONN, LOW);
 #endif
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**@brief Function to be executed on Radio Tx Timeout event
@@ -285,22 +209,18 @@ void OnTxTimeout(void)
 
 #ifdef TX_ONLY
 	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 	// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 	digitalWrite(LED_CONN, LOW);
 #endif
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**@brief Function to be executed on Radio Rx Timeout event
@@ -311,22 +231,18 @@ void OnRxTimeout(void)
 
 #ifdef TX_ONLY
 	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 	// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 	digitalWrite(LED_CONN, LOW);
 #endif
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**@brief Function to be executed on Radio Rx Error event
@@ -335,22 +251,18 @@ void OnRxError(void)
 {
 #ifdef TX_ONLY
 	Radio.Sleep(); // Radio.Standby();
-	// Radio.Sleep();
 #else
 	// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 	// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 	// to catch incoming data packages
 	// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-	Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+	Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 	// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 	digitalWrite(LED_CONN, LOW);
 #endif
-
-	// Send LoRa handler back to sleep
-	xSemaphoreTake(loraEvent, 10);
 }
 
 /**@brief Function to be executed on Radio Rx Error event
@@ -361,22 +273,18 @@ void OnCadDone(bool cadResult)
 	{
 #ifdef TX_ONLY
 		Radio.Sleep(); // Radio.Standby();
-		// Radio.Sleep();
 #else
 		// To get maximum power savings we use Radio.SetRxDutyCycle instead of Radio.Rx(0)
 		// This function keeps the SX1261/2 chip most of the time in sleep and only wakes up short times
 		// to catch incoming data packages
 		// See document SX1261_AN1200.36_SX1261-2_RxDutyCycle_V1.0 ==>> https://semtech.my.salesforce.com/sfc/p/#E0000000JelG/a/2R0000001O3w/zsdHpRveb0_jlgJEedwalzsBaBnALfRq_MnJ25M_wtI
-		Radio.SetRxDutyCycle(2 * 1024 * 1000 * 15.625, 10 * 1024 * 15.625);
+		Radio.SetRxDutyCycle(duty_cycle_rx_time, duty_cycle_sleep_time);
 #endif
 
 		// Switch off the indicator lights
 #if MYLOG_LOG_LEVEL > MYLOG_LOG_LEVEL_NONE
 		digitalWrite(LED_CONN, LOW);
 #endif
-
-		// Send LoRa handler back to sleep
-		xSemaphoreTake(loraEvent, 10);
 	}
 	else
 	{
